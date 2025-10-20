@@ -75,207 +75,260 @@
 
 
 fetch_alphafold_prediction <- function(uniprot_ids = NULL,
-                                       organism_name = NULL,  # not implemented; kept for compatibility
-                                       version = "v4",        # ignored (API provides version); kept for compatibility
+                                       organism_name = NULL,   # kept for compatibility; not used
+                                       version = "v4",         # kept for compatibility; API provides current
                                        timeout = 3600,
                                        max_tries = 5,
                                        return_data_frame = FALSE,
-                                       show_progress = TRUE) {
-
+                                       show_progress = TRUE,
+                                       include_all_fragments = FALSE,
+                                       prefer = c("cif","bcif","pdb")) {
+  # ---- quick guards ----
   if (!curl::has_internet()) {
-    message("No internet connection.")
-    return(invisible(NULL))
+    message("No internet connection."); return(invisible(NULL))
   }
   if (!missing(uniprot_ids) & !missing(organism_name)) {
     stop(strwrap("Please only provide either a list of UniProt identifiers or one organism name!",
                  prefix = "\n", initial = ""))
   }
   if (is.null(uniprot_ids) || length(uniprot_ids) == 0) {
-    message("No UniProt IDs supplied.")
-    return(invisible(NULL))
+    message("No UniProt IDs supplied."); return(invisible(NULL))
   }
-
-  # sanitize IDs
   uniprot_ids <- uniprot_ids[!is.na(uniprot_ids)]
+  prefer <- match.arg(prefer)
 
-  # helper: GET JSON with retries
+  # ---- helpers ----
+  `%||%` <- function(a, b) if (!is.null(a)) a else b
+
   .get_json <- function(url, tries = max_tries, timeout_sec = timeout) {
     for (i in seq_len(tries)) {
-      resp <- tryCatch(
-        httr::GET(url, httr::timeout(timeout_sec)),
-        error = function(e) e
-      )
-      if (inherits(resp, "error")) next
-      if (httr::http_error(resp)) {
-        # backoff a bit on server-side errors
-        if (httr::status_code(resp) >= 500) Sys.sleep(min(5 * i, 30))
-        next
-      }
-      return(jsonlite::fromJSON(httr::content(resp, as = "text", encoding = "UTF-8"), simplifyVector = TRUE))
+      resp <- tryCatch(httr::GET(url, httr::timeout(timeout_sec)), error = identity)
+      if (inherits(resp, "error")) { Sys.sleep(min(2 * i, 10)); next }
+      if (httr::http_error(resp))  { if (httr::status_code(resp) >= 500) Sys.sleep(min(5 * i, 30)); next }
+      txt <- httr::content(resp, as = "text", encoding = "UTF-8")
+      return(tryCatch(jsonlite::fromJSON(txt, simplifyVector = TRUE), error = function(e) paste0("Client error: ", e$message)))
     }
-    return(paste0("Client error: Failed to fetch JSON from ", url))
+    paste0("Client error: Failed to fetch JSON from ", url)
   }
 
-  # helper: read a remote text file into tibble(X1 = lines)
   .read_lines_tbl <- function(file_url, tries = max_tries, timeout_sec = timeout) {
     for (i in seq_len(tries)) {
       con <- NULL
       out <- tryCatch({
         con <- curl::curl(file_url, open = "rb", handle = curl::new_handle(timeout = timeout_sec))
-        lines <- readr::read_lines(con, progress = FALSE)
-        tibble::tibble(X1 = lines)
-      }, error = function(e) e, finally = if (!is.null(con)) close(con))
-      if (inherits(out, "error")) {
-        Sys.sleep(min(2 * i, 10))
-        next
-      }
-      return(out)
+        tibble::tibble(X1 = readr::read_lines(con, progress = FALSE))
+      }, error = identity, finally = if (!is.null(con)) close(con))
+      if (!inherits(out, "error")) return(out)
+      Sys.sleep(min(2 * i, 10))
     }
-    return(paste0("Client error: Failed to download file: ", file_url))
+    paste0("Client error: Failed to download file: ", file_url)
   }
 
-  # map IDs to preferred file URLs via the API
-  api_urls <- setNames(
-    paste0("https://alphafold.ebi.ac.uk/api/prediction/", uniprot_ids),
-    uniprot_ids
-  )
+  .parse_mmcif_atom_site <- function(lines) {
+    # locate loop_ with _atom_site.* tags
+    is_loop <- trimws(lines) == "loop_"
+    loop_idxs <- which(is_loop)
+    start_tags <- end_tags <- start_rows <- end_rows <- NULL
+    for (li in loop_idxs) {
+      i <- li + 1
+      tags <- character()
+      while (i <= length(lines) && grepl("^_", lines[i])) {
+        if (grepl("^_atom_site\\.", lines[i])) tags <- c(tags, lines[i])
+        i <- i + 1
+      }
+      if (length(tags)) {
+        r <- i
+        while (r <= length(lines) &&
+               nzchar(trimws(lines[r])) &&
+               !grepl("^(loop_|data_|#)", trimws(lines[r])) &&
+               !grepl("^_", lines[r])) {
+          r <- r + 1
+        }
+        start_tags <- li + 1; end_tags <- i - 1
+        start_rows <- i;      end_rows <- r - 1
+        break
+      }
+    }
+    if (is.null(start_rows)) stop("Could not locate _atom_site loop in mmCIF.")
+
+    tag_lines <- lines[start_tags:end_tags]
+    colnames <- sub("^_atom_site\\.", "", trimws(tag_lines))
+    dat_txt <- paste0(lines[start_rows:end_rows], collapse = "\n")
+
+    df <- readr::read_table2(dat_txt, col_names = colnames, na = c(".", "?"),
+                             progress = FALSE, show_col_types = FALSE)
+
+    want <- intersect(c(
+      "id","type_symbol","label_atom_id","label_comp_id",
+      "label_asym_id","label_entity_id","label_seq_id",
+      "Cartn_x","Cartn_y","Cartn_z","B_iso_or_equiv",
+      "auth_seq_id","auth_comp_id","auth_asym_id"
+    ), names(df))
+    out <- df[, want, drop = FALSE]
+
+    num_cols <- intersect(c("id","label_seq_id","Cartn_x","Cartn_y","Cartn_z","B_iso_or_equiv","auth_seq_id"), names(out))
+    out[num_cols] <- lapply(out[num_cols], function(x) suppressWarnings(as.numeric(x)))
+
+    dplyr::transmute(
+      out,
+      label_id         = .data$id,
+      type_symbol      = .data$type_symbol,
+      label_atom_id    = .data$label_atom_id,
+      label_comp_id    = .data$label_comp_id,
+      label_asym_id    = .data$label_asym_id,
+      label_seq_id     = .data$label_seq_id,
+      x                = .data$Cartn_x,
+      y                = .data$Cartn_y,
+      z                = .data$Cartn_z,
+      prediction_score = .data$B_iso_or_equiv,     # AF pLDDT lives here
+      auth_seq_id      = .data$auth_seq_id,
+      auth_comp_id     = .data$auth_comp_id,
+      auth_asym_id     = .data$auth_asym_id
+    ) |>
+      dplyr::mutate(
+        score_quality = dplyr::case_when(
+          .data$prediction_score > 90 ~ "very_good",
+          .data$prediction_score > 70 ~ "confident",
+          .data$prediction_score > 50 ~ "low",
+          is.na(.data$prediction_score) ~ NA_character_,
+          TRUE ~ "very_low"
+        )
+      )
+  }
+
+  .pick_url <- function(pred) {
+    # prefer user choice, fallback through others
+    if (prefer == "cif")  return(pred$cifUrl %||% pred$bcifUrl %||% pred$pdbUrl)
+    if (prefer == "bcif") return(pred$bcifUrl %||% pred$cifUrl %||% pred$pdbUrl)
+    if (prefer == "pdb")  return(pred$pdbUrl %||% pred$cifUrl %||% pred$bcifUrl)
+  }
+
+  # ---- resolve file URLs from API ----
+  api_urls <- setNames(paste0("https://alphafold.ebi.ac.uk/api/prediction/", uniprot_ids), uniprot_ids)
 
   if (isTRUE(show_progress)) {
-    pb <- progress::progress_bar$new(
-      total = length(api_urls),
-      format = "  Resolving AFDB file URLs [:bar] :current/:total (:percent) :eta"
-    )
+    pb <- progress::progress_bar$new(total = length(api_urls),
+      format = "  Resolving AFDB file URLs [:bar] :current/:total (:percent) :eta")
   }
 
-  file_map <- lapply(names(api_urls), function(id) {
-    url <- api_urls[[id]]
-    meta <- .get_json(url)
+  # for each UniProt: collect 1 (F1) or many (all fragments) file URLs
+  resolved <- lapply(names(api_urls), function(id) {
+    meta <- .get_json(api_urls[[id]])
     if (isTRUE(show_progress)) pb$tick()
 
-    if (is.character(meta)) {
-      # error string
-      return(list(id = id, error = meta))
-    }
+    if (is.character(meta)) return(list(id = id, errors = meta, files = NULL))
 
-    # API returns a list of prediction objects; pick F1 by default
-    # (To use all fragments, drop the filtering line below.)
     preds <- meta
-    if (is.data.frame(preds)) preds <- as.list(as.data.frame(t(preds), stringsAsFactors = FALSE))
-    # If it's a list of predictions (most common case)
-    if (is.list(preds) && length(preds) > 0) {
-      # find F1 if present, else first
-      pick <- NULL
-      for (p in preds) {
-        # common fields include 'id' like "AF-<ACC>-F1-model_v4"
-        if (!is.null(p$id) && grepl("-F1-", p$id)) { pick <- p; break }
-      }
-      if (is.null(pick)) pick <- preds[[1]]
+    # normalize to list-of-lists
+    if (is.data.frame(preds)) preds <- split(preds, seq_len(nrow(preds)))
+    if (!length(preds)) return(list(id = id, errors = "No predictions", files = NULL))
 
-      # Prefer mmCIF; then bCIF; then PDB
-      file_url <- pick$cifUrl %||% pick$bcifUrl %||% pick$pdbUrl
-      if (is.null(file_url)) {
-        return(list(id = id, error = "No downloadable model URL (cifUrl/bcifUrl/pdbUrl) in API response"))
-      } else {
-        return(list(id = id, file_url = file_url))
-      }
-    } else {
-      return(list(id = id, error = "Unexpected API response format"))
+    # choose subset
+    if (!include_all_fragments) {
+      # prefer F1 (id like "AF-<ACC>-F1-model_vX")
+      pick <- NULL
+      for (p in preds) if (!is.null(p$id) && grepl("-F1-", p$id)) { pick <- p; break }
+      if (is.null(pick)) pick <- preds[[1]]
+      preds <- list(pick)
     }
+
+    # build files
+    files <- lapply(preds, function(p) {
+      file_url <- .pick_url(p)
+      if (is.null(file_url)) return(NULL)
+      frag <- NA_character_
+      if (!is.null(p$id)) {
+        m <- regexpr("-F\\d+-", p$id)
+        if (m > 0) frag <- sub("^-|-$", "", substring(p$id, m, m + attr(m, "match.length") - 1))
+      }
+      list(file_url = file_url,
+           fragment = frag,
+           model_id = p$id %||% NA_character_,
+           model_version = p$modelVersion %||% NA_character_,
+           uniprot = id)
+    })
+    files <- Filter(Negate(is.null), files)
+    if (!length(files)) return(list(id = id, errors = "No downloadable model URL in API response", files = NULL))
+    list(id = id, errors = NULL, files = files)
   })
 
-  # split successes and errors
-  errors <- Filter(function(x) !is.null(x$error), file_map)
-  ok     <- Filter(function(x) !is.null(x$file_url), file_map)
-
-  if (length(errors)) {
-    error_table <- tibble::tibble(
-      id    = vapply(errors, `[[`, "", "id"),
-      error = vapply(errors, `[[`, "", "error")
+  # collect errors & the full download plan
+  api_errors <- Filter(function(x) !is.null(x$errors), resolved)
+  if (length(api_errors)) {
+    err_tbl <- tibble::tibble(
+      id    = vapply(api_errors, `[[`, "", "id"),
+      error = vapply(api_errors, `[[`, "", "errors")
     ) |> dplyr::distinct()
     message("Some IDs could not be resolved to file URLs:")
-    message(paste0(utils::capture.output(error_table), collapse = "\n"))
+    message(paste0(utils::capture.output(err_tbl), collapse = "\n"))
   }
 
-  if (!length(ok)) {
+  plan <- unlist(lapply(resolved, function(x) x$files), recursive = FALSE)
+  if (!length(plan)) {
     message("No valid file URLs could be resolved from the API.")
     return(invisible(NULL))
   }
 
-  # Now fetch & parse structures (as before)
+  # ---- fetch & parse structures ----
   if (isTRUE(show_progress)) {
-    pb2 <- progress::progress_bar$new(
-      total = length(ok),
-      format = "  Fetching AlphaFold predictions [:bar] :current/:total (:percent) :eta"
-    )
+    pb2 <- progress::progress_bar$new(total = length(plan),
+      format = "  Fetching AlphaFold predictions [:bar] :current/:total (:percent) :eta")
   }
 
-  query_result <- setNames(lapply(ok, function(rec) {
-    q <- .read_lines_tbl(rec$file_url)
+  fetched <- lapply(plan, function(rec) {
+    tbl <- .read_lines_tbl(rec$file_url)
     if (isTRUE(show_progress)) pb2$tick()
+    if (is.character(tbl)) return(list(key = rec$uniprot, error = tbl, df = NULL, meta = rec))
 
-    if (is.character(q)) {
-      # pass through error string
-      return(q)
+    # robust mmCIF parse
+    parsed <- tryCatch(.parse_mmcif_atom_site(tbl$X1), error = function(e) e)
+    if (inherits(parsed, "error")) {
+      return(list(key = rec$uniprot, error = paste0("Parse error: ", parsed$message), df = NULL, meta = rec))
     }
 
-    # your original parsing, unchanged
-    q %>%
-      dplyr::filter(stringr::str_detect(X1, pattern = "^ATOM\\s+\\d|^HETATM\\s+\\d")) %>%
-      dplyr::mutate(X2 = stringr::str_replace_all(X1, pattern = "\\s+", replacement = " ")) %>%
-      tidyr::separate(
-        X2,
-        sep = " ",
-        into = c(
-          "x1","label_id","type_symbol","label_atom_id","x2","label_comp_id","label_asym_id",
-          "entity_id","label_seq_id","x3","x","y","z","site_occupancy","prediction_score",
-          "formal_charge","auth_seq_id","auth_comp_id","auth_asym_id","x4","pdb_model_number",
-          "uniprot_id","x5","x6","x7"
-        ),
-        fill = "right", remove = TRUE
-      ) %>%
-      dplyr::select(-c(
-        "X1","x1","x2","x3","x4","x5","x6","x7",
-        "formal_charge","site_occupancy","entity_id","pdb_model_number"
-      )) %>%
-      dplyr::mutate(
-        label_id       = suppressWarnings(as.numeric(.data$label_id)),
-        label_seq_id   = suppressWarnings(as.numeric(.data$label_seq_id)),
-        x              = suppressWarnings(as.numeric(.data$x)),
-        y              = suppressWarnings(as.numeric(.data$y)),
-        z              = suppressWarnings(as.numeric(.data$z)),
-        prediction_score = suppressWarnings(as.numeric(.data$prediction_score)),
-        auth_seq_id    = .data$auth_seq_id
-      ) %>%
-      dplyr::mutate(score_quality = dplyr::case_when(
-        .data$prediction_score > 90 ~ "very_good",
-        .data$prediction_score > 70 ~ "confident",
-        .data$prediction_score > 50 ~ "low",
-        .data$prediction_score <= 50 ~ "very_low",
-        TRUE ~ NA_character_
-      ))
-  }), vapply(ok, `[[`, "", "id"))
+    # add metadata columns for convenience
+    parsed$uniprot_id   <- rec$uniprot
+    parsed$fragment     <- rec$fragment
+    parsed$model_id     <- rec$model_id
+    parsed$model_version<- rec$model_version
+    parsed$file_url     <- rec$file_url
 
-  # report any per-file download/parse errors
-  error_list <- purrr::keep(query_result, ~ is.character(.x))
-  if (length(error_list) != 0) {
-    error_table <- tibble::tibble(
-      id = names(error_list),
-      error = unlist(error_list)
-    ) %>% dplyr::distinct()
-    message("The following IDs have not been retrieved correctly.")
-    message(paste0(utils::capture.output(error_table), collapse = "\n"))
+    list(key = rec$uniprot, error = NULL, df = parsed, meta = rec)
+  })
+
+  # report per-file errors
+  got_err <- Filter(function(x) !is.null(x$error), fetched)
+  if (length(got_err)) {
+    err_tbl <- tibble::tibble(
+      id    = vapply(got_err, function(x) x$meta$uniprot, ""),
+      frag  = vapply(got_err, function(x) x$meta$fragment %||% "F?", ""),
+      error = vapply(got_err, `[[`, "", "error")
+    ) |> dplyr::distinct()
+    message("The following downloads/parses failed:")
+    message(paste0(utils::capture.output(err_tbl), collapse = "\n"))
   }
 
-  # keep only successful data
-  query_result <- purrr::keep(query_result, ~ !is.character(.x))
-  if (length(query_result) == 0) {
+  # assemble output
+  ok <- Filter(function(x) !is.null(x$df), fetched)
+  if (!length(ok)) {
     message("No valid information could be retrieved!")
     return(invisible(NULL))
   }
 
-  if (isFALSE(return_data_frame)) {
-    return(query_result)
+  # by default: list per UniProt (binds fragments inside each ID)
+  out_list <- lapply(split(ok, vapply(ok, `[[`, "", "key")), function(items) {
+    dfs <- lapply(items, `[[`, "df")
+    dplyr::bind_rows(dfs)
+  })
+
+  if (!return_data_frame) {
+    # keep original shape: named list by UniProt ID
+    ids <- vapply(split(ok, vapply(ok, `[[`, "", "key")), function(x) x[[1]]$key, "")
+    names(out_list) <- ids
+    return(out_list)
   } else {
-    return(purrr::list_rbind(query_result))
+    # single data frame of all rows
+    return(dplyr::bind_rows(out_list))
   }
 }
+
