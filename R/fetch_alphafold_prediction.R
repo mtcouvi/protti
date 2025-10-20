@@ -2,6 +2,8 @@
 #'
 #' Fetches atom level data for AlphaFold predictions either for selected proteins or whole
 #' organisms.
+#' Update 10/2025 M. Couvillion and ChatGPT: fixed to work after the Oct 2025 AlphaFold update. 
+#' No longer supports whole organism output
 #'
 #' @param uniprot_ids optional, a character vector of UniProt identifiers for which predictions
 #' should be fetched. This argument is mutually exclusive to the \code{organism_name} argument.
@@ -225,13 +227,12 @@ fetch_alphafold_prediction <- function(uniprot_ids = NULL,
       tidyr::separate(
         X2,
         sep = " ",
-        into = c(
-          "x1","label_id","type_symbol","label_atom_id","x2","label_comp_id","label_asym_id",
-          "entity_id","label_seq_id","x3","x","y","z","site_occupancy","prediction_score",
-          "formal_charge","auth_seq_id","auth_comp_id","auth_asym_id","x4","pdb_model_number",
-          "uniprot_id","x5","x6","x7"
-        ),
-        fill = "right", remove = TRUE
+        into = c("x1","label_id","type_symbol","label_atom_id","x2","label_comp_id","label_asym_id",
+           "entity_id","label_seq_id","x3","x","y","z","site_occupancy","prediction_score",
+           "formal_charge","auth_seq_id","auth_comp_id","auth_asym_id","x4","pdb_model_number",
+           "uniprot_id","x5","x6","x7"),
+        fill  = "right",
+        extra = "drop"   # <— prevents the warning by discarding extras
       ) %>%
       dplyr::select(-c(
         "X1","x1","x2","x3","x4","x5","x6","x7",
