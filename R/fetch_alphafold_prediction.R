@@ -72,372 +72,210 @@
 #'
 #' head(alphafold, n = 10)
 #' }
+
+
 fetch_alphafold_prediction <- function(uniprot_ids = NULL,
-                                       organism_name = NULL,
-                                       version = "v4",
+                                       organism_name = NULL,  # not implemented; kept for compatibility
+                                       version = "v4",        # ignored (API provides version); kept for compatibility
                                        timeout = 3600,
                                        max_tries = 5,
                                        return_data_frame = FALSE,
                                        show_progress = TRUE) {
+
   if (!curl::has_internet()) {
     message("No internet connection.")
     return(invisible(NULL))
   }
   if (!missing(uniprot_ids) & !missing(organism_name)) {
     stop(strwrap("Please only provide either a list of UniProt identifiers or one organism name!",
-      prefix = "\n", initial = ""
-    ))
+                 prefix = "\n", initial = ""))
   }
-  # if organism name is provided fetch all information about that organism
-  if (!missing(organism_name)) {
-    stop("Organism-wide tarball branch not patched in this quick fix.\n",
-         "Use uniprot_ids=... or ask me for the organism branch patch too.")
+  if (is.null(uniprot_ids) || length(uniprot_ids) == 0) {
+    message("No UniProt IDs supplied.")
+    return(invisible(NULL))
   }
-  #   organism_name <- match.arg(organism_name, c(
-  #     "Arabidopsis thaliana",
-  #     "Caenorhabditis elegans",
-  #     "Candida albicans",
-  #     "Danio rerio",
-  #     "Dictyostelium discoideum",
-  #     "Drosophila melanogaster",
-  #     "Escherichia coli",
-  #     "Glycine max",
-  #     "Homo sapiens",
-  #     "Leishmania infantum",
-  #     "Methanocaldococcus jannaschii",
-  #     "Mus musculus",
-  #     "Mycobacterium tuberculosis",
-  #     "Oryza sativa",
-  #     "Plasmodium falciparum",
-  #     "Rattus norvegicus",
-  #     "Saccharomyces cerevisiae",
-  #     "Schizosaccharomyces pombe",
-  #     "Staphylococcus aureus",
-  #     "Trypanosoma cruzi",
-  #     "Zea mays",
-  #     "Ajellomyces capsulatus",
-  #     "Brugia malayi",
-  #     "Campylobacter jejuni",
-  #     "Cladophialophora carrionii",
-  #     "Dracunculus medinensis",
-  #     "Enterococcus faecium",
-  #     "Fonsecaea pedrosoi",
-  #     "Haemophilus influenzae",
-  #     "Helicobacter pylori",
-  #     "Klebsiella pneumoniae",
-  #     "Leishmania infantum",
-  #     "Madurella mycetomatis",
-  #     "Mycobacterium leprae",
-  #     "Mycobacterium tuberculosis",
-  #     "Mycobacterium ulcerans",
-  #     "Neisseria gonorrhoeae",
-  #     "Nocardia brasiliensis",
-  #     "Onchocerca volvulus",
-  #     "Paracoccidioides lutzii",
-  #     "Plasmodium falciparum",
-  #     "Pseudomonas aeruginosa",
-  #     "Salmonella typhimurium",
-  #     "Schistosoma mansoni",
-  #     "Shigella dysenteriae",
-  #     "Sporothrix schenckii",
-  #     "Staphylococcus aureus",
-  #     "Streptococcus pneumoniae",
-  #     "Strongyloides stercoralis",
-  #     "Trichuris trichiura",
-  #     "Trypanosoma brucei",
-  #     "Trypanosoma cruzi",
-  #     "Wuchereria bancrofti"
-  #   ))
 
-  #   organism_file <- switch(organism_name,
-  #     "Arabidopsis thaliana" = "UP000006548_3702_ARATH",
-  #     "Caenorhabditis elegans" = "UP000001940_6239_CAEEL",
-  #     "Candida albicans" = "UP000000559_237561_CANAL",
-  #     "Danio rerio" = "UP000000437_7955_DANRE",
-  #     "Dictyostelium discoideum" = "UP000002195_44689_DICDI",
-  #     "Drosophila melanogaster" = "UP000000803_7227_DROME",
-  #     "Escherichia coli" = "UP000000625_83333_ECOLI",
-  #     "Glycine max" = "UP000008827_3847_SOYBN",
-  #     "Homo sapiens" = "UP000005640_9606_HUMAN",
-  #     "Leishmania infantum" = "UP000008153_5671_LEIIN",
-  #     "Methanocaldococcus jannaschii" = "UP000000805_243232_METJA",
-  #     "Mus musculus" = "UP000000589_10090_MOUSE",
-  #     "Mycobacterium tuberculosis" = "UP000001584_83332_MYCTU",
-  #     "Oryza sativa" = "UP000059680_39947_ORYSJ",
-  #     "Plasmodium falciparum" = "UP000001450_36329_PLAF7",
-  #     "Rattus norvegicus" = "UP000002494_10116_RAT",
-  #     "Saccharomyces cerevisiae" = "UP000002311_559292_YEAST",
-  #     "Schizosaccharomyces pombe" = "UP000002485_284812_SCHPO",
-  #     "Staphylococcus aureus" = "UP000008816_93061_STAA8",
-  #     "Trypanosoma cruzi" = "UP000002296_353153_TRYCC",
-  #     "Zea mays" = "UP000007305_4577_MAIZE",
-  #     "Ajellomyces capsulatus" = "UP000001631_447093_AJECG",
-  #     "Brugia malayi" = "UP000006672_6279_BRUMA",
-  #     "Campylobacter jejuni" = "UP000000799_192222_CAMJE",
-  #     "Cladophialophora carrionii" = "UP000094526_86049_9EURO1",
-  #     "Dracunculus medinensis" = "UP000274756_318479_DRAME",
-  #     "Enterococcus faecium" = "UP000325664_1352_ENTFC",
-  #     "Fonsecaea pedrosoi" = "UP000053029_1442368_9EURO2",
-  #     "Haemophilus influenzae" = "UP000000579_71421_HAEIN",
-  #     "Helicobacter pylori" = "UP000000429_85962_HELPY",
-  #     "Klebsiella pneumoniae" = "UP000007841_1125630_KLEPH",
-  #     "Leishmania infantum" = "UP000008153_5671_LEIIN",
-  #     "Madurella mycetomatis" = "UP000078237_100816_9PEZI1",
-  #     "Mycobacterium leprae" = "UP000000806_272631_MYCLE",
-  #     "Mycobacterium tuberculosis" = "UP000001584_83332_MYCTU",
-  #     "Mycobacterium ulcerans" = "UP000020681_1299332_MYCUL",
-  #     "Neisseria gonorrhoeae" = "UP000000535_242231_NEIG1",
-  #     "Nocardia brasiliensis" = "UP000006304_1133849_9NOCA1",
-  #     "Onchocerca volvulus" = "UP000024404_6282_ONCVO",
-  #     "Paracoccidioides lutzii" = "UP000002059_502779_PARBA",
-  #     "Plasmodium falciparum" = "UP000001450_36329_PLAF7",
-  #     "Pseudomonas aeruginosa" = "UP000002438_208964_PSEAE",
-  #     "Salmonella typhimurium" = "UP000001014_99287_SALTY",
-  #     "Schistosoma mansoni" = "UP000008854_6183_SCHMA",
-  #     "Shigella dysenteriae" = "UP000002716_300267_SHIDS",
-  #     "Sporothrix schenckii" = "UP000018087_1391915_SPOS1",
-  #     "Staphylococcus aureus" = "UP000008816_93061_STAA8",
-  #     "Streptococcus pneumoniae" = "UP000000586_171101_STRR6",
-  #     "Strongyloides stercoralis" = "UP000035681_6248_STRER",
-  #     "Trichuris trichiura" = "UP000030665_36087_TRITR",
-  #     "Trypanosoma brucei" = "UP000008524_185431_TRYB2",
-  #     "Trypanosoma cruzi" = "UP000002296_353153_TRYCC",
-  #     "Wuchereria bancrofti" = "UP000270924_6293_WUCBA"
-  #   )
-
-  #   url <- paste0("https://ftp.ebi.ac.uk/pub/databases/alphafold/", version, "/", organism_file, "_", version, ".tar")
-
-  #   # set new longer timeout and reset to standard once function exits.
-  #   old <- options(timeout = timeout)
-  #   on.exit(options(old))
-
-  #   # This does not fail gracefully. I could not figure out how to
-  #   # catch the error and the two warnings in case of a timeout.
-  #   # The error would not be caught while only the first warning that does not
-  #   # contain the timeout information was caught.
-  #   utils::download.file(url, destfile = paste0(tempdir(), "/alphafold.tar"))
-
-  #   utils::untar(
-  #     tarfile = paste0(tempdir(), "/alphafold.tar"),
-  #     exdir = paste0(tempdir(), "/alphafold")
-  #   )
-
-  #   all_files <- paste0(
-  #     tempdir(),
-  #     "/alphafold/",
-  #     list.files(
-  #       path = paste0(
-  #         tempdir(),
-  #         "/alphafold"
-  #       ),
-  #       pattern = ".cif.gz"
-  #     )
-  #   )
-
-  #   all_protein_ids <- str_extract(all_files,
-  #     pattern = "(?<=AF-).+(?=-F1)"
-  #   )
-
-  #   names(all_files) <- all_protein_ids
-
-  #   if (show_progress == TRUE) {
-  #     pb <- progress::progress_bar$new(
-  #       total = length(all_files),
-  #       format = paste0(
-  #         "Importing AlphaFold predictions for ",
-  #         organism_name,
-  #         "[:bar] :current/:total (:percent) :eta"
-  #       )
-  #     )
-  #   }
-
-  #   query_result <- purrr::map(
-  #     .x = all_files,
-  #     .f = ~ {
-  #       if (show_progress == TRUE) {
-  #         pb$tick()
-  #       }
-  #       readr::read_tsv(.x, col_names = FALSE, quote = "", show_col_types = FALSE, progress = FALSE) %>%
-  #         dplyr::filter(stringr::str_detect(X1, pattern = "^ATOM\\s+\\d|^HETATM\\s+\\d")) %>%
-  #         dplyr::mutate(X2 = stringr::str_replace_all(X1, pattern = "\\s+", replacement = " ")) %>%
-  #         tidyr::separate(X2,
-  #           sep = " ",
-  #           into = c(
-  #             "x1",
-  #             "label_id",
-  #             "type_symbol",
-  #             "label_atom_id",
-  #             "x2",
-  #             "label_comp_id",
-  #             "label_asym_id",
-  #             "entity_id",
-  #             "label_seq_id",
-  #             "x3",
-  #             "x",
-  #             "y",
-  #             "z",
-  #             "site_occupancy",
-  #             "prediction_score",
-  #             "formal_charge",
-  #             "auth_seq_id",
-  #             "auth_comp_id",
-  #             "auth_asym_id",
-  #             "x4",
-  #             "pdb_model_number",
-  #             "uniprot_id",
-  #             "x5",
-  #             "x6",
-  #             "x7"
-  #           )
-  #         ) %>%
-  #         dplyr::select(-c(
-  #           "X1",
-  #           "x1",
-  #           "x2",
-  #           "x3",
-  #           "x4",
-  #           "x5",
-  #           "x6",
-  #           "x7",
-  #           "formal_charge",
-  #           "site_occupancy",
-  #           "entity_id",
-  #           "pdb_model_number"
-  #         )) %>%
-  #         dplyr::mutate(
-  #           label_id = as.numeric(.data$label_id),
-  #           label_seq_id = as.numeric(.data$label_seq_id),
-  #           x = as.numeric(.data$x),
-  #           y = as.numeric(.data$y),
-  #           z = as.numeric(.data$z),
-  #           prediction_score = as.numeric(.data$prediction_score),
-  #           auth_seq_id = .data$auth_seq_id
-  #         ) %>%
-  #         dplyr::mutate(score_quality = dplyr::case_when(
-  #           .data$prediction_score > 90 ~ "very_good",
-  #           .data$prediction_score > 70 ~ "confident",
-  #           .data$prediction_score > 50 ~ "low",
-  #           .data$prediction_score <= 50 ~ "very_low"
-  #         ))
-  #     }
-  #   )
-  #   # delete files after everything is done
-  #   unlink(paste0(tempdir(), "/alphafold"), recursive = TRUE)
-  #   unlink(paste0(tempdir(), "/alphafold.tar"))
-  # } else {
-   
-
-    # # NEW (strip isoform; try .pdb.gz then .pdb)
-    # uniprot_ids <- stringr::str_replace(uniprot_ids, "-\\d+$", "")
-    # batches <- purrr::map(uniprot_ids, ~ c(
-    #   paste0("https://alphafold.ebi.ac.uk/files/AF-", .x, "-F1-model_", version, ".pdb.gz"),
-    #   paste0("https://alphafold.ebi.ac.uk/files/AF-", .x, "-F1-model_", version, ".pdb")
-    # ))
-
-    # names(batches) <- uniprot_ids
-
- 
-
-  # ---------- patched per-ID branch ----------
+  # sanitize IDs
   uniprot_ids <- uniprot_ids[!is.na(uniprot_ids)]
-  # drop isoform suffixes like P12345-2
-  uniprot_ids <- sub("-\\d+$", "", uniprot_ids)
 
-  # build candidate URLs: try .pdb.gz first, then .pdb
-  build_candidates <- function(id)
-    c(
-      sprintf("https://alphafold.ebi.ac.uk/files/AF-%s-F1-model_%s.pdb.gz", id, version),
-      sprintf("https://alphafold.ebi.ac.uk/files/AF-%s-F1-model_%s.pdb",    id, version)
-    )
-
-  # helper that uses protti's existing try_query to fetch lines as a one-column tibble
-  fetch_pdb_lines <- function(candidates) {
-    for (u in candidates) {
-      q <- try_query(u,
-                     type = "text/tab-separated-values", # ok: each PDB line becomes one field (X1)
-                     timeout = timeout,
-                     max_tries = max_tries,
-                     col_names = FALSE,
-                     quote = "",
-                     show_col_types = FALSE,
-                     progress = FALSE)
-      if ("tbl" %in% class(q)) return(q)
+  # helper: GET JSON with retries
+  .get_json <- function(url, tries = max_tries, timeout_sec = timeout) {
+    for (i in seq_len(tries)) {
+      resp <- tryCatch(
+        httr::GET(url, httr::timeout(timeout_sec)),
+        error = function(e) e
+      )
+      if (inherits(resp, "error")) next
+      if (httr::http_error(resp)) {
+        # backoff a bit on server-side errors
+        if (httr::status_code(resp) >= 500) Sys.sleep(min(5 * i, 30))
+        next
+      }
+      return(jsonlite::fromJSON(httr::content(resp, as = "text", encoding = "UTF-8"), simplifyVector = TRUE))
     }
-    return("Client error: (404) Not Found")
+    return(paste0("Client error: Failed to fetch JSON from ", url))
   }
 
-  if (show_progress) {
+  # helper: read a remote text file into tibble(X1 = lines)
+  .read_lines_tbl <- function(file_url, tries = max_tries, timeout_sec = timeout) {
+    for (i in seq_len(tries)) {
+      con <- NULL
+      out <- tryCatch({
+        con <- curl::curl(file_url, open = "rb", handle = curl::new_handle(timeout = timeout_sec))
+        lines <- readr::read_lines(con, progress = FALSE)
+        tibble::tibble(X1 = lines)
+      }, error = function(e) e, finally = if (!is.null(con)) close(con))
+      if (inherits(out, "error")) {
+        Sys.sleep(min(2 * i, 10))
+        next
+      }
+      return(out)
+    }
+    return(paste0("Client error: Failed to download file: ", file_url))
+  }
+
+  # map IDs to preferred file URLs via the API
+  api_urls <- setNames(
+    paste0("https://alphafold.ebi.ac.uk/api/prediction/", uniprot_ids),
+    uniprot_ids
+  )
+
+  if (isTRUE(show_progress)) {
     pb <- progress::progress_bar$new(
-      total = length(uniprot_ids),
+      total = length(api_urls),
+      format = "  Resolving AFDB file URLs [:bar] :current/:total (:percent) :eta"
+    )
+  }
+
+  file_map <- lapply(names(api_urls), function(id) {
+    url <- api_urls[[id]]
+    meta <- .get_json(url)
+    if (isTRUE(show_progress)) pb$tick()
+
+    if (is.character(meta)) {
+      # error string
+      return(list(id = id, error = meta))
+    }
+
+    # API returns a list of prediction objects; pick F1 by default
+    # (To use all fragments, drop the filtering line below.)
+    preds <- meta
+    if (is.data.frame(preds)) preds <- as.list(as.data.frame(t(preds), stringsAsFactors = FALSE))
+    # If it's a list of predictions (most common case)
+    if (is.list(preds) && length(preds) > 0) {
+      # find F1 if present, else first
+      pick <- NULL
+      for (p in preds) {
+        # common fields include 'id' like "AF-<ACC>-F1-model_v4"
+        if (!is.null(p$id) && grepl("-F1-", p$id)) { pick <- p; break }
+      }
+      if (is.null(pick)) pick <- preds[[1]]
+
+      # Prefer mmCIF; then bCIF; then PDB
+      file_url <- pick$cifUrl %||% pick$bcifUrl %||% pick$pdbUrl
+      if (is.null(file_url)) {
+        return(list(id = id, error = "No downloadable model URL (cifUrl/bcifUrl/pdbUrl) in API response"))
+      } else {
+        return(list(id = id, file_url = file_url))
+      }
+    } else {
+      return(list(id = id, error = "Unexpected API response format"))
+    }
+  })
+
+  # split successes and errors
+  errors <- Filter(function(x) !is.null(x$error), file_map)
+  ok     <- Filter(function(x) !is.null(x$file_url), file_map)
+
+  if (length(errors)) {
+    error_table <- tibble::tibble(
+      id    = vapply(errors, `[[`, "", "id"),
+      error = vapply(errors, `[[`, "", "error")
+    ) |> dplyr::distinct()
+    message("Some IDs could not be resolved to file URLs:")
+    message(paste0(utils::capture.output(error_table), collapse = "\n"))
+  }
+
+  if (!length(ok)) {
+    message("No valid file URLs could be resolved from the API.")
+    return(invisible(NULL))
+  }
+
+  # Now fetch & parse structures (as before)
+  if (isTRUE(show_progress)) {
+    pb2 <- progress::progress_bar$new(
+      total = length(ok),
       format = "  Fetching AlphaFold predictions [:bar] :current/:total (:percent) :eta"
     )
   }
 
-  query_result <- purrr::imap(
-    .x = lapply(uniprot_ids, build_candidates),
-    .f = function(cands, id) {
-      res <- fetch_pdb_lines(cands)
-      if (show_progress) pb$tick()
+  query_result <- setNames(lapply(ok, function(rec) {
+    q <- .read_lines_tbl(rec$file_url)
+    if (isTRUE(show_progress)) pb2$tick()
 
-      if (!"tbl" %in% class(res)) return(res)
-
-      # parse PDB lines (keeps your original ATOM/HETATM + space-splitting logic)
-      res %>%
-        dplyr::filter(stringr::str_detect(X1, "^ATOM\\s+\\d|^HETATM\\s+\\d")) %>%
-        dplyr::mutate(X2 = stringr::str_replace_all(X1, "\\s+", " ")) %>%
-        tidyr::separate(
-          X2,
-          sep  = " ",
-          into = c("x1","label_id","type_symbol","label_atom_id","x2","label_comp_id","label_asym_id",
-                   "entity_id","label_seq_id","x3","x","y","z","site_occupancy","prediction_score",
-                   "formal_charge","auth_seq_id","auth_comp_id","auth_asym_id","x4","pdb_model_number",
-                   "uniprot_id","x5","x6","x7"),
-          fill = "right", extra = "drop"
-        ) %>%
-        dplyr::select(-c("X1","x1","x2","x3","x4","x5","x6","x7",
-                         "formal_charge","site_occupancy","entity_id","pdb_model_number")) %>%
-        dplyr::mutate(
-          label_id     = suppressWarnings(as.numeric(.data$label_id)),
-          label_seq_id = suppressWarnings(as.numeric(.data$label_seq_id)),
-          x = suppressWarnings(as.numeric(.data$x)),
-          y = suppressWarnings(as.numeric(.data$y)),
-          z = suppressWarnings(as.numeric(.data$z)),
-          prediction_score = suppressWarnings(as.numeric(.data$prediction_score)),
-          auth_seq_id  = .data$auth_seq_id,
-          uniprot_id   = id
-        ) %>%
-        dplyr::mutate(score_quality = dplyr::case_when(
-          .data$prediction_score > 90 ~ "very_good",
-          .data$prediction_score > 70 ~ "confident",
-          .data$prediction_score > 50 ~ "low",
-          TRUE                        ~ "very_low"
-        ))
+    if (is.character(q)) {
+      # pass through error string
+      return(q)
     }
-  )
-  names(query_result) <- uniprot_ids
 
-  # error table (unchanged)
-  error_list <- query_result %>% purrr::keep(~ is.character(.x))
+    # your original parsing, unchanged
+    q %>%
+      dplyr::filter(stringr::str_detect(X1, pattern = "^ATOM\\s+\\d|^HETATM\\s+\\d")) %>%
+      dplyr::mutate(X2 = stringr::str_replace_all(X1, pattern = "\\s+", replacement = " ")) %>%
+      tidyr::separate(
+        X2,
+        sep = " ",
+        into = c(
+          "x1","label_id","type_symbol","label_atom_id","x2","label_comp_id","label_asym_id",
+          "entity_id","label_seq_id","x3","x","y","z","site_occupancy","prediction_score",
+          "formal_charge","auth_seq_id","auth_comp_id","auth_asym_id","x4","pdb_model_number",
+          "uniprot_id","x5","x6","x7"
+        ),
+        fill = "right", remove = TRUE
+      ) %>%
+      dplyr::select(-c(
+        "X1","x1","x2","x3","x4","x5","x6","x7",
+        "formal_charge","site_occupancy","entity_id","pdb_model_number"
+      )) %>%
+      dplyr::mutate(
+        label_id       = suppressWarnings(as.numeric(.data$label_id)),
+        label_seq_id   = suppressWarnings(as.numeric(.data$label_seq_id)),
+        x              = suppressWarnings(as.numeric(.data$x)),
+        y              = suppressWarnings(as.numeric(.data$y)),
+        z              = suppressWarnings(as.numeric(.data$z)),
+        prediction_score = suppressWarnings(as.numeric(.data$prediction_score)),
+        auth_seq_id    = .data$auth_seq_id
+      ) %>%
+      dplyr::mutate(score_quality = dplyr::case_when(
+        .data$prediction_score > 90 ~ "very_good",
+        .data$prediction_score > 70 ~ "confident",
+        .data$prediction_score > 50 ~ "low",
+        .data$prediction_score <= 50 ~ "very_low",
+        TRUE ~ NA_character_
+      ))
+  }), vapply(ok, `[[`, "", "id"))
+
+  # report any per-file download/parse errors
+  error_list <- purrr::keep(query_result, ~ is.character(.x))
   if (length(error_list) != 0) {
-    error_table <- tibble::tibble(id = names(error_list), error = unlist(error_list)) %>%
-      dplyr::distinct()
-    if (any(stringr::str_detect(unique(error_table$error), "Timeout"))) {
-      message('The retrieval of data timed out. Consider increasing "timeout" or "max_tries".\n')
-    }
+    error_table <- tibble::tibble(
+      id = names(error_list),
+      error = unlist(error_list)
+    ) %>% dplyr::distinct()
     message("The following IDs have not been retrieved correctly.")
     message(paste0(utils::capture.output(error_table), collapse = "\n"))
   }
 
-  # keep successful results only
-  query_result <- query_result %>% purrr::keep(~ !is.character(.x))
+  # keep only successful data
+  query_result <- purrr::keep(query_result, ~ !is.character(.x))
   if (length(query_result) == 0) {
     message("No valid information could be retrieved!")
     return(invisible(NULL))
   }
 
-  if (!return_data_frame) {
+  if (isFALSE(return_data_frame)) {
     return(query_result)
   } else {
-    return(purrr::map_dfr(query_result, ~ .x))
+    return(purrr::list_rbind(query_result))
   }
 }
